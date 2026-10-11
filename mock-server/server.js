@@ -11,11 +11,23 @@
  *   idempotency        : pushes replaying a seen idempotencyKey return the
  *                        original result instead of applying twice
  *
+ * DEV-ONLY: never deploy this. No auth, no TLS, in-memory state.
+ *
  * Run: node mock-server/server.js [port]
  */
 'use strict';
 
 const http = require('http');
+
+/** Hard cap on request bodies (1 MiB) — this is a demo, nobody posts megabytes. */
+const MAX_BODY_BYTES = 1024 * 1024;
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
 
 function createMockServer({ port = 4000, latencyMs = 0, clock = Date.now } = {}) {
   /** @type {Map<string, object>} */
@@ -47,14 +59,26 @@ function createMockServer({ port = 4000, latencyMs = 0, clock = Date.now } = {})
     const url = new URL(req.url, `http://localhost:${port}`);
     const path = url.pathname;
     const send = (status, body) => {
+      if (res.headersSent || res.writableEnded) return;
       const json = JSON.stringify(body);
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(json);
     };
     const readBody = () =>
-      new Promise((resolve) => {
+      new Promise((resolve, reject) => {
         let raw = '';
-        req.on('data', (c) => (raw += c));
+        let bytes = 0;
+        let overflow = false;
+        req.on('data', (c) => {
+          if (overflow) return; // stop accumulating; Node drains the rest after the reply
+          bytes += c.length;
+          if (bytes > MAX_BODY_BYTES) {
+            overflow = true;
+            reject(new HttpError(413, 'request body exceeds 1 MiB'));
+            return;
+          }
+          raw += c;
+        });
         req.on('end', () => {
           try {
             resolve(raw ? JSON.parse(raw) : {});
@@ -62,9 +86,22 @@ function createMockServer({ port = 4000, latencyMs = 0, clock = Date.now } = {})
             resolve({});
           }
         });
+        req.on('error', () => reject(new HttpError(400, 'request body unreadable')));
       });
 
     setTimeout(async () => {
+      try {
+        await route(req, url, path, send, readBody);
+      } catch (err) {
+        // Never leak stack traces or internals: fixed, generic messages only.
+        const status = err instanceof HttpError ? err.status : 500;
+        send(status, { error: status === 413 ? 'request body too large' : 'internal error' });
+      }
+    }, latency);
+  }
+
+  function route(req, url, path, send, readBody) {
+    return (async () => {
       // ---- admin knobs -------------------------------------------------
       if (path === '/admin/latency' && req.method === 'POST') {
         const b = await readBody();
@@ -179,12 +216,21 @@ function createMockServer({ port = 4000, latencyMs = 0, clock = Date.now } = {})
       }
 
       send(404, { error: 'no route' });
-    }, latency);
+    })();
   }
 
   const server = http.createServer(handle);
+  // Bound request lifetime so a stalled client can never hold a socket open.
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 15_000;
+  server.keepAliveTimeout = 5_000;
+  // Malformed requests: answer 400 quietly instead of dumping a stack trace.
+  server.on('clientError', (_err, socket) => {
+    if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+  });
   return {
     server,
+    // Loopback only: this is a dev/demo server and must never face a network.
     listen: () =>
       new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server.address()))),
     close: () => new Promise((resolve) => server.close(resolve)),
