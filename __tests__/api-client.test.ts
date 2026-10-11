@@ -1,5 +1,5 @@
 import { createApiClient, type FetchLike } from '../src/api/client';
-import { RetryableApiError } from '../src/core/types';
+import { ApiError, RetryableApiError } from '../src/core/types';
 import type { Mutation } from '../src/core/types';
 
 function stubFetch(handler: (url: string, init?: Parameters<FetchLike>[1]) => { status: number; body: unknown } | 'throw'): {
@@ -75,5 +75,15 @@ describe('createApiClient', () => {
     const api = createApiClient(fetch, 'http://x.test///');
     await api.list();
     expect(calls[0].url).toBe('http://x.test/work-orders');
+  });
+
+  it('maps other 4xx to a typed non-retryable ApiError carrying the status', async () => {
+    for (const status of [400, 401, 403, 422]) {
+      const { fetch } = stubFetch(() => ({ status, body: { error: 'nope' } }));
+      const api = createApiClient(fetch, 'http://x.test');
+      await expect(api.list()).rejects.toBeInstanceOf(ApiError);
+      await expect(api.list()).rejects.not.toBeInstanceOf(RetryableApiError);
+      await expect(api.list()).rejects.toMatchObject({ status });
+    }
   });
 });

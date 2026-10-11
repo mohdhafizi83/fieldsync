@@ -1,17 +1,43 @@
 /**
  * Idempotency keys must be unique per mutation and survive restarts (they are
- * persisted with the outbox entry). RFC-4122 v4 shape; uses expo-crypto when
- * present and falls back to Math.random so pure-Node tooling/tests never
- * need a native module.
+ * persisted with the outbox entry). RFC-4122 v4 shape, generated from a
+ * CSPRNG only:
+ *
+ *   1. globalThis.crypto.getRandomValues — Hermes/RN with expo-crypto polyfill,
+ *      browsers, Node >= 19.
+ *   2. process.getBuiltinModule('node:crypto').randomBytes — pure-Node tooling
+ *      (demo, tests) without touching package.json deps.
+ *
+ * There is deliberately NO Math.random fallback: a predictable idempotency key
+ * defeats server-side dedup (two colliding mutations apply twice), so we fail
+ * loudly instead of silently weakening the key.
  */
-export function uuidv4(): string {
-  const bytes = new Uint8Array(16);
-  const cryptoObj = (globalThis as { crypto?: { getRandomValues?: (b: Uint8Array) => Uint8Array } }).crypto;
-  if (cryptoObj?.getRandomValues) {
-    cryptoObj.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+function csprngBytes(length: number): Uint8Array {
+  const g = globalThis as { crypto?: { getRandomValues?: (b: Uint8Array) => Uint8Array } };
+  if (g.crypto?.getRandomValues) {
+    const out = new Uint8Array(length);
+    g.crypto.getRandomValues(out);
+    return out;
   }
+  const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+  if (typeof proc?.getBuiltinModule === 'function') {
+    try {
+      const nodeCrypto = proc.getBuiltinModule('node:crypto') as
+        | { randomBytes?: (n: number) => Uint8Array }
+        | undefined;
+      if (nodeCrypto?.randomBytes) return new Uint8Array(nodeCrypto.randomBytes(length));
+    } catch {
+      /* fall through to the loud failure below */
+    }
+  }
+  throw new Error(
+    'no CSPRNG available (globalThis.crypto.getRandomValues / node:crypto missing) — ' +
+      'refusing to generate a weak idempotency key',
+  );
+}
+
+export function uuidv4(): string {
+  const bytes = csprngBytes(16);
   bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
   bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
   const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');

@@ -1,4 +1,4 @@
-import { RetryableApiError } from '../core/types';
+import { ApiError, RetryableApiError } from '../core/types';
 import type { DeltaResponse, Mutation, PushResult, WorkOrder } from '../core/types';
 
 /** Minimal fetch-like seam — tests inject a stub, no network in CI. */
@@ -45,7 +45,9 @@ export function createApiClient(fetchImpl: FetchLike, baseUrl: string): WorkOrde
       throw new RetryableApiError('not found', 404);
     }
     if (res.status >= 400) {
-      throw new Error(`unexpected status ${res.status}`);
+      // Every non-2xx leaves this function as a typed error — never a silent
+      // parse of an error body.
+      throw new ApiError(`unexpected status ${res.status}`, res.status);
     }
     return (await res.json()) as T;
   }

@@ -51,3 +51,11 @@ export class RetryableApiError extends Error {
     this.name = 'RetryableApiError';
   }
 }
+
+/** Non-retryable HTTP failure (4xx other than 404/409 handling in the client). */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
