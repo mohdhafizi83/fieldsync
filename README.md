@@ -7,7 +7,7 @@ An offline-first work-order app for field technicians, built with Expo (React Na
 ```bash
 npm install
 npm run demo   # no emulator, no accounts, no network beyond 127.0.0.1
-npm test       # 60 tests, all offline
+npm test       # 70 tests, all offline
 ```
 
 ## The problem
@@ -99,8 +99,9 @@ src/api/         client.ts — typed REST client over an injected fetch-like
 src/screens/     WorkOrderList · WorkOrderDetail · SyncStatus (presentational, tested)
 mock-server/     stdlib-only Node server: latency + failure + conflict injection, idempotency
 scripts/demo.ts  the scripted scenario behind `npm run demo`
-__tests__/       60 tests: outbox, backoff math, LWW cases, delta cursor, repo contract,
-                 engine integration (scripted fake API), API client, 6 component tests
+__tests__/       70 tests: outbox, backoff math, LWW cases, delta cursor, repo contract,
+                 engine integration (scripted fake API), API client, uuid entropy,
+                 mock-server hardening, 6 component tests
 ```
 
 ## Commands
@@ -108,19 +109,28 @@ __tests__/       60 tests: outbox, backoff math, LWW cases, delta cursor, repo c
 | Command | What it does |
 | --- | --- |
 | `npm run demo` | Full scripted scenario against the in-process mock — the proof artifact |
-| `npm test` | 60 jest tests, zero network |
+| `npm test` | 70 jest tests, zero network |
 | `npm run typecheck` / `npm run lint` | tsc --noEmit / eslint |
 | `npm run mock-server` | Standalone mock on :4000 (point `API_BASE` in `App.tsx` at it) |
 | `npm start` | Expo app (three screens wired to the engine) |
 
-CI (GitHub Actions, Node 20 + 22) runs install → typecheck → lint → jest → `expo export` (the real Metro bundle, no native toolchain needed).
+CI (GitHub Actions, Node 20 + 22) runs install → typecheck → lint → jest → `expo export` (the real Metro bundle, no native toolchain needed) → dependency audit → gitleaks. Actions are SHA-pinned and direct npm deps are exact-pinned.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the full policy. Short version: this is a
+**client app** — the sync engine assumes HTTPS and server-side auth in
+production (neither exists in this repo). The mock server is **dev-only,
+binds to 127.0.0.1, and must never be deployed**. Idempotency keys are
+CSPRNG-generated and protect the retry path against double-apply; they are
+not secrets and authorize nothing.
 
 ## Honest limitations
 
 - **Single-user per device, no push notifications.** Sync is pull/flush-on-demand; a real deployment would add FCM/APNs wake-ups and a background task to trigger flush.
 - **LWW discards the loser's concurrent edit** (the demo shows the server-wins path). Field-level merging is the known upgrade path if the product needs it.
 - **The outbox is in-memory in the demo**; the SQLite adapter persists work orders, but wiring outbox persistence to SQLite is left as the obvious next step (the interface is ready for it).
-- **No auth.** The mock server is unauthenticated by design — it exists to demo sync, not security.
+- **No auth.** The mock server is unauthenticated by design — it exists to demo sync, not security. It binds loopback-only and is hardened against sloppy input (body cap, timeouts, no stack traces), but that is hygiene, not a security boundary. Never deploy it.
 - The app screens are deliberately thin; the engine is the deliverable.
 
 MIT © 2026 Mohd Hafizi
